@@ -15,7 +15,9 @@ HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 BLOCK_MARKER_START = "# === WEBSITE BLOCKER START ==="
 BLOCK_MARKER_END = "# === WEBSITE BLOCKER END ==="
 REDIRECT_IP = "127.0.0.1"
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocked_sites.json")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "blocked_sites.json")
+LOCK_FILE = os.path.join(SCRIPT_DIR, "blocker.lock")
 
 # Default blocked apps — process names as they appear in Task Manager
 DEFAULT_BLOCKED_APPS = [
@@ -227,6 +229,68 @@ def kill_blocked_apps(apps):
 
 
 # ---------------------------------------------------------------------------
+# Daemon lock file
+# ---------------------------------------------------------------------------
+
+def write_lock_file():
+    """Write the current PID to the lock file."""
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def remove_lock_file():
+    """Remove the lock file."""
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
+
+
+def get_daemon_pid():
+    """Read the PID from the lock file. Returns None if no daemon is running."""
+    if not os.path.exists(LOCK_FILE):
+        return None
+    try:
+        with open(LOCK_FILE, "r") as f:
+            pid = int(f.read().strip())
+        # Check if the process is still running
+        output = subprocess.check_output(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if str(pid) in output.decode("utf-8", errors="ignore"):
+            return pid
+        # Stale lock file
+        remove_lock_file()
+        return None
+    except Exception:
+        remove_lock_file()
+        return None
+
+
+def stop_daemon():
+    """Stop a running daemon by killing its process."""
+    pid = get_daemon_pid()
+    if pid is None:
+        print("No daemon is currently running.")
+        return False
+    try:
+        subprocess.call(
+            ["taskkill", "/F", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        remove_lock_file()
+        print(f"Stopped daemon (PID {pid}).")
+        return True
+    except Exception as e:
+        print(f"Error stopping daemon: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Status / display
 # ---------------------------------------------------------------------------
 
@@ -290,6 +354,7 @@ def print_usage():
     print()
     print("General:")
     print("  python blocker.py daemon    - Run in background (blocks sites + kills apps)")
+    print("  python blocker.py stop      - Stop the running daemon")
 
 
 def main():
@@ -425,8 +490,19 @@ def main():
         if killed == 0:
             print("No blocked apps are currently running.")
 
+    elif command == "stop":
+        stop_daemon()
+
     elif command == "daemon":
-        print("Running in daemon mode. Blocking sites + killing apps every 30 seconds.")
+        # Stop any already-running daemon first
+        existing_pid = get_daemon_pid()
+        if existing_pid:
+            print(f"Stopping existing daemon (PID {existing_pid})...")
+            stop_daemon()
+
+        write_lock_file()
+        print(f"Running in daemon mode (PID {os.getpid()}).")
+        print("Blocking sites + killing apps every 30 seconds.")
         print("Press Ctrl+C to stop.")
         try:
             while True:
@@ -437,6 +513,8 @@ def main():
                 time.sleep(30)
         except KeyboardInterrupt:
             print("\nDaemon stopped.")
+        finally:
+            remove_lock_file()
 
     else:
         print(f"Unknown command: {command}")

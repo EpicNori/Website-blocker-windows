@@ -4,13 +4,20 @@ echo   Website ^& App Blocker - Uninstall
 echo ============================================
 echo.
 
-echo [1/2] Unblocking all websites...
+echo [1/3] Stopping running daemon...
+python "%~dp0blocker.py" stop 2>nul
+echo.
+
+echo [2/3] Unblocking all websites...
 python "%~dp0blocker.py" unblock
 echo.
 
-echo [2/2] Removing from Windows startup...
+echo [3/3] Removing from Windows startup...
 python "%~dp0setup_autostart.py" uninstall
 echo.
+
+:: Clean up lock file if it exists
+if exist "%~dp0blocker.lock" del "%~dp0blocker.lock"
 
 echo ============================================
 echo   Uninstall complete!

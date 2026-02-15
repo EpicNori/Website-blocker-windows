@@ -12,7 +12,9 @@ A simple productivity tool that blocks distracting websites (TikTok, YouTube, In
 
 - **Websites**: Adds entries to `C:\Windows\System32\drivers\etc\hosts` that redirect blocked domains to `127.0.0.1`, so your browser can't reach them.
 - **Apps**: Scans running processes every 30 seconds and force-kills any that match your blocked apps list (using `taskkill`).
+- **Autostart**: Uses Windows Task Scheduler to launch the daemon at login with admin rights — no UAC prompt on boot.
 - A background daemon re-applies everything every 30 seconds so you can't easily bypass it.
+- The installer blocks sites, kills apps, sets up autostart, **and starts the daemon immediately** so there's no gap.
 
 ## Files
 
@@ -72,9 +74,10 @@ python blocker.py listapps               # Show all running processes
 
 ```
 python blocker.py daemon   # Blocks sites + kills apps every 30 seconds
+python blocker.py stop     # Stop the running daemon
 ```
 
-This is what runs at startup automatically.
+The daemon is started automatically by the installer and on every login.
 
 ### System tray app (optional)
 
@@ -98,6 +101,7 @@ python setup_autostart.py status     # Check status
 Run `uninstall.bat` as administrator, or manually:
 
 ```
+python blocker.py stop
 python blocker.py unblock
 python setup_autostart.py uninstall
 ```
