@@ -1,0 +1,23 @@
+{
+  "blocked_sites": [
+    "www.tiktok.com",
+    "tiktok.com",
+    "www.youtube.com",
+    "youtube.com",
+    "m.youtube.com",
+    "www.instagram.com",
+    "instagram.com",
+    "www.facebook.com",
+    "facebook.com",
+    "www.twitter.com",
+    "twitter.com",
+    "x.com",
+    "www.x.com",
+    "www.reddit.com",
+    "reddit.com"
+  ],
+  "blocked_apps": [
+    "TikTok.exe",
+    "Instagram.exe"
+  ]
+}
