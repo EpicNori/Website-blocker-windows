@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo   Website Blocker - Uninstall
+echo   Website ^& App Blocker - Uninstall
 echo ============================================
 echo.
 
@@ -15,7 +15,8 @@ echo.
 echo ============================================
 echo   Uninstall complete!
 echo ============================================
-echo All websites have been unblocked and the
-echo blocker has been removed from startup.
+echo All websites have been unblocked, app blocking
+echo has been stopped, and the blocker has been
+echo removed from startup.
 echo.
 pause

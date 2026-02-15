@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo   Website Blocker - Installation
+echo   Website ^& App Blocker - Installation
 echo ============================================
 echo.
 
@@ -18,7 +18,7 @@ echo [1/3] Installing Python dependencies...
 pip install pystray Pillow
 echo.
 
-echo [2/3] Blocking websites...
+echo [2/3] Blocking websites and killing blocked apps...
 python "%~dp0blocker.py" block
 echo.
 
@@ -30,11 +30,15 @@ echo ============================================
 echo   Installation complete!
 echo ============================================
 echo.
-echo Your websites are now blocked.
+echo Your websites are now blocked and blocked apps
+echo will be killed automatically every 30 seconds.
 echo The blocker will start automatically when you log in.
 echo.
-echo To edit which sites are blocked, edit:
+echo To edit which sites/apps are blocked, edit:
 echo   %~dp0blocked_sites.json
+echo.
+echo To see running apps (so you know the .exe name):
+echo   python blocker.py listapps
 echo.
 echo To uninstall, run uninstall.bat
 echo.

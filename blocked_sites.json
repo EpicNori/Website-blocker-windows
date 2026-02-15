@@ -15,5 +15,9 @@
     "www.x.com",
     "www.reddit.com",
     "reddit.com"
+  ],
+  "blocked_apps": [
+    "TikTok.exe",
+    "Instagram.exe"
   ]
 }

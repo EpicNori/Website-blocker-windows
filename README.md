@@ -1,25 +1,27 @@
-# Website Blocker for Windows
+# Website & App Blocker for Windows
 
-A simple productivity tool that blocks distracting websites (TikTok, YouTube, Instagram, etc.) on your Windows PC. It modifies the Windows `hosts` file to redirect blocked domains to `127.0.0.1` and registers itself in Windows autostart so it runs every time you log in.
+A simple productivity tool that blocks distracting websites (TikTok, YouTube, Instagram, etc.) **and kills distracting apps** on your Windows PC. Websites are blocked via the Windows `hosts` file; apps are blocked by automatically killing their processes. Runs at startup so everything stays blocked.
 
 ## Quick Start
 
 1. Make sure [Python](https://www.python.org/downloads/) is installed (check "Add Python to PATH" during install)
 2. **Right-click `install.bat` and select "Run as administrator"**
-3. Done — sites are blocked and the blocker will start on every login
+3. Done — sites are blocked, apps get killed, and it auto-starts on every login
 
 ## How It Works
 
-The script adds entries to `C:\Windows\System32\drivers\etc\hosts` that redirect blocked domains to `127.0.0.1`. This means your browser can't reach those sites. A background daemon re-applies the blocks every 60 seconds in case anything resets them.
+- **Websites**: Adds entries to `C:\Windows\System32\drivers\etc\hosts` that redirect blocked domains to `127.0.0.1`, so your browser can't reach them.
+- **Apps**: Scans running processes every 30 seconds and force-kills any that match your blocked apps list (using `taskkill`).
+- A background daemon re-applies everything every 30 seconds so you can't easily bypass it.
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `blocker.py` | Core blocker — reads/writes the hosts file |
-| `blocked_sites.json` | List of websites to block (edit this!) |
+| `blocker.py` | Core blocker — handles both websites and apps |
+| `blocked_sites.json` | Config file — lists blocked sites AND apps (edit this!) |
 | `setup_autostart.py` | Adds/removes the blocker from Windows startup |
-| `tray_blocker.py` | System tray app with a menu to toggle blocking |
+| `tray_blocker.py` | System tray app with toggle controls |
 | `install.bat` | One-click install (block + autostart) |
 | `uninstall.bat` | One-click uninstall (unblock + remove autostart) |
 
@@ -27,7 +29,7 @@ The script adds entries to `C:\Windows\System32\drivers\etc\hosts` that redirect
 
 ### Edit the block list
 
-Open `blocked_sites.json` in any text editor and add or remove domains:
+Open `blocked_sites.json` in any text editor:
 
 ```json
 {
@@ -36,30 +38,47 @@ Open `blocked_sites.json` in any text editor and add or remove domains:
     "tiktok.com",
     "www.youtube.com",
     "youtube.com"
+  ],
+  "blocked_apps": [
+    "TikTok.exe",
+    "Instagram.exe"
   ]
 }
 ```
 
-Or use the command line:
+### Website commands
 
 ```
-python blocker.py add snapchat.com
-python blocker.py remove youtube.com
+python blocker.py block           # Block all sites + kill blocked apps
+python blocker.py unblock         # Unblock all sites
+python blocker.py add tiktok.com  # Add a site (auto-adds www. variant)
+python blocker.py remove tiktok.com
+python blocker.py status          # Show what's blocked
+python blocker.py list            # Show full config
 ```
 
-### Manual commands
+### App commands
 
 ```
-python blocker.py block       # Block all sites in config
-python blocker.py unblock     # Unblock all sites
-python blocker.py status      # Show what's blocked
-python blocker.py list        # Show the config
-python blocker.py daemon      # Run in background, re-apply every 60s
+python blocker.py addapp TikTok.exe      # Add an app to the block list
+python blocker.py removeapp TikTok.exe   # Remove an app
+python blocker.py killapps               # Kill all blocked apps right now
+python blocker.py listapps               # Show all running processes
 ```
+
+**Tip**: Don't know the process name? Run `python blocker.py listapps` to see all running `.exe` names, then use that name with `addapp`.
+
+### Daemon mode
+
+```
+python blocker.py daemon   # Blocks sites + kills apps every 30 seconds
+```
+
+This is what runs at startup automatically.
 
 ### System tray app (optional)
 
-For a tray icon that lets you toggle blocking with a click:
+For a tray icon with right-click controls (toggle sites, toggle apps, kill now):
 
 ```
 pip install pystray Pillow
@@ -87,5 +106,5 @@ python setup_autostart.py uninstall
 
 - Windows 10/11
 - Python 3.7+
-- Administrator privileges (needed to edit the hosts file)
+- Administrator privileges (needed to edit the hosts file and kill processes)
 - `pystray` and `Pillow` (only for the tray app — installed automatically by `install.bat`)
