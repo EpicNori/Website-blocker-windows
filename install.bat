@@ -30,11 +30,13 @@ echo [4/4] Starting background daemon now...
 :: Stop any existing daemon first
 python "%~dp0blocker.py" stop 2>nul
 
-:: Find pythonw.exe for silent background execution
-for /f "delims=" %%i in ('python -c "import sys, os; d=os.path.dirname(sys.executable); pw=os.path.join(d,'pythonw.exe'); print(pw if os.path.exists(pw) else sys.executable)"') do set PYTHONW=%%i
-
-:: Launch daemon in background (invisible, no console window)
-start "" /B "%PYTHONW%" "%~dp0blocker.py" daemon
+:: Use pythonw.exe (no console window) if available, else python.exe
+where pythonw.exe >nul 2>&1
+if errorlevel 1 (
+    start "" /B python "%~dp0blocker.py" daemon
+) else (
+    start "" /B pythonw "%~dp0blocker.py" daemon
+)
 echo Daemon started in background.
 echo.
 
