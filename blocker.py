@@ -164,6 +164,19 @@ def save_blocked_urls(urls):
 # Website blocking (hosts file)
 # ---------------------------------------------------------------------------
 
+def flush_dns():
+    """Flush the Windows DNS cache so blocked sites take effect immediately."""
+    try:
+        subprocess.call(
+            ["ipconfig", "/flushdns"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        pass
+
+
 def read_hosts():
     """Read the current hosts file content."""
     try:
@@ -174,7 +187,7 @@ def read_hosts():
 
 
 def block_sites(sites):
-    """Add blocked sites to the hosts file."""
+    """Add blocked sites to the hosts file and flush DNS."""
     content = read_hosts()
     content = remove_blocker_entries(content)
 
@@ -188,6 +201,7 @@ def block_sites(sites):
     with open(HOSTS_PATH, "w") as f:
         f.write(new_content)
 
+    flush_dns()
     print(f"Blocked {len(sites)} sites.")
 
 
@@ -199,6 +213,7 @@ def unblock_sites():
     with open(HOSTS_PATH, "w") as f:
         f.write(new_content)
 
+    flush_dns()
     print("All sites unblocked.")
 
 
