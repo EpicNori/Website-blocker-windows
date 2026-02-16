@@ -12,6 +12,17 @@ import subprocess
 import sys
 import time
 
+# ---------------------------------------------------------------------------
+# Fix for pythonw.exe: stdout/stderr are None when there's no console.
+# Redirect to a log file so print() doesn't crash the daemon.
+# ---------------------------------------------------------------------------
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocker.log")
+
+if sys.stdout is None:
+    sys.stdout = open(LOG_FILE, "a", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(LOG_FILE, "a", encoding="utf-8")
+
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 BLOCK_MARKER_START = "# === WEBSITE BLOCKER START ==="
 BLOCK_MARKER_END = "# === WEBSITE BLOCKER END ==="
@@ -690,15 +701,18 @@ def main():
         write_lock_file()
         print(f"Running in daemon mode (PID {os.getpid()}).")
         print("Blocking sites + URLs + killing apps every 30 seconds.")
-        print("Press Ctrl+C to stop.")
         try:
             while True:
-                sites = load_config()
-                block_sites(sites)
-                urls = load_blocked_urls()
-                apply_url_blocks(urls)
-                apps = load_blocked_apps()
-                kill_blocked_apps(apps)
+                try:
+                    sites = load_config()
+                    block_sites(sites)
+                    urls = load_blocked_urls()
+                    apply_url_blocks(urls)
+                    apps = load_blocked_apps()
+                    kill_blocked_apps(apps)
+                except Exception as e:
+                    # Don't let a single iteration failure kill the daemon
+                    print(f"Daemon cycle error: {e}")
                 time.sleep(30)
         except KeyboardInterrupt:
             print("\nDaemon stopped.")
