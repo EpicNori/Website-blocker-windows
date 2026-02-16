@@ -87,6 +87,8 @@ def _default_config():
         "blocked_urls": [
             "youtube.com/shorts",
             "youtube.com/shorts/*",
+            "www.youtube.com/shorts",
+            "www.youtube.com/shorts/*",
             "m.youtube.com/shorts",
             "m.youtube.com/shorts/*",
         ],
@@ -754,15 +756,27 @@ def main():
             return
         url_pattern = sys.argv[2]
         urls = load_blocked_urls()
-        if url_pattern not in urls:
-            urls.append(url_pattern)
-            # Auto-add wildcard variant if not already present
+        added = []
+        # Build all variants: exact, wildcard, www. versions
+        variants = [url_pattern]
+        if not url_pattern.endswith("/*") and not url_pattern.endswith("*"):
+            variants.append(url_pattern.rstrip("/") + "/*")
+        # Auto-add www. variant if the domain doesn't already start with www.
+        domain = url_pattern.split("/")[0]
+        if not domain.startswith("www."):
+            www_pattern = "www." + url_pattern
+            variants.append(www_pattern)
             if not url_pattern.endswith("/*") and not url_pattern.endswith("*"):
-                wildcard = url_pattern.rstrip("/") + "/*"
-                if wildcard not in urls:
-                    urls.append(wildcard)
+                variants.append("www." + url_pattern.rstrip("/") + "/*")
+        for v in variants:
+            if v not in urls:
+                urls.append(v)
+                added.append(v)
+        if added:
             save_blocked_urls(urls)
-            print(f"Added '{url_pattern}' to blocked URLs.")
+            print(f"Added to blocked URLs:")
+            for a in added:
+                print(f"  - {a}")
         else:
             print(f"'{url_pattern}' is already in the blocked URLs list.")
         apply_url_blocks(urls)
@@ -809,8 +823,24 @@ def main():
         write_lock_file()
         print(f"Running in daemon mode (PID {os.getpid()}).")
         print("Blocking sites + URLs + killing apps every 30 seconds.")
+
+        # First run: apply all blocks and restart browsers ONCE
+        # so that any sites/apps open from a previous session get killed
+        try:
+            sites = load_config()
+            block_sites(sites)
+            urls = load_blocked_urls()
+            apply_url_blocks(urls)
+            apps = load_blocked_apps()
+            kill_blocked_apps(apps)
+            restart_browsers()
+        except Exception as e:
+            print(f"Initial block error: {e}")
+
+        # Daemon loop: re-apply blocks and kill apps (no browser restart)
         try:
             while True:
+                time.sleep(30)
                 try:
                     sites = load_config()
                     block_sites(sites)
@@ -819,9 +849,7 @@ def main():
                     apps = load_blocked_apps()
                     kill_blocked_apps(apps)
                 except Exception as e:
-                    # Don't let a single iteration failure kill the daemon
                     print(f"Daemon cycle error: {e}")
-                time.sleep(30)
         except KeyboardInterrupt:
             print("\nDaemon stopped.")
         finally:

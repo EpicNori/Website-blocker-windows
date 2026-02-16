@@ -16,6 +16,8 @@
   "blocked_urls": [
     "youtube.com/shorts",
     "youtube.com/shorts/*",
+    "www.youtube.com/shorts",
+    "www.youtube.com/shorts/*",
     "m.youtube.com/shorts",
     "m.youtube.com/shorts/*"
   ],
