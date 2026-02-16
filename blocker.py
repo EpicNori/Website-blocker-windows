@@ -180,57 +180,76 @@ def flush_dns():
         pass
 
 
-def restart_browsers():
-    """Gracefully close and relaunch browsers to drop cached connections.
-
-    Uses taskkill without /F so browsers save their session. When the user
-    reopens the browser it will offer to restore tabs — blocked sites will
-    fail to load.
-    """
-    running = get_running_processes()
-    closed = []
-
+def _get_browser_paths():
+    """Get full executable paths for running browsers via PowerShell."""
+    paths = {}
     for browser in BROWSERS:
-        if browser.lower() in running:
-            # Graceful close (no /F) — lets the browser save session data
-            subprocess.call(
-                ["taskkill", "/IM", browser],
-                stdout=subprocess.DEVNULL,
+        name = browser.replace(".exe", "")
+        try:
+            output = subprocess.check_output(
+                [
+                    "powershell", "-NoProfile", "-Command",
+                    f"(Get-Process -Name '{name}' -ErrorAction SilentlyContinue "
+                    f"| Select-Object -First 1).Path",
+                ],
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            closed.append(browser)
+            path = output.decode("utf-8", errors="ignore").strip()
+            if path:
+                paths[browser] = path
+        except Exception:
+            pass
+    return paths
 
-    if closed:
-        # Give browsers a moment to save session data
-        time.sleep(2)
 
-        # Force-kill any that didn't close gracefully
-        for browser in closed:
-            subprocess.call(
-                ["taskkill", "/F", "/IM", browser],
+def restart_browsers():
+    """Close and relaunch browsers to drop cached connections to blocked sites."""
+    # Save full paths BEFORE killing so we can relaunch
+    browser_paths = _get_browser_paths()
+
+    if not browser_paths:
+        return
+
+    closed = list(browser_paths.keys())
+
+    # Graceful close — lets browsers save session data
+    for browser in closed:
+        subprocess.call(
+            ["taskkill", "/IM", browser],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    time.sleep(2)
+
+    # Force-kill any that didn't close gracefully
+    for browser in closed:
+        subprocess.call(
+            ["taskkill", "/F", "/IM", browser],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    time.sleep(1)
+
+    # Relaunch using the saved full paths
+    for browser in closed:
+        path = browser_paths[browser]
+        try:
+            subprocess.Popen(
+                [path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
             )
+        except Exception:
+            pass
 
-        time.sleep(1)
-
-        # Relaunch the browsers (they will restore their previous session)
-        for browser in closed:
-            try:
-                subprocess.Popen(
-                    [browser],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                    | getattr(subprocess, "DETACHED_PROCESS", 0),
-                )
-            except Exception:
-                pass
-
-        names = ", ".join(b.replace(".exe", "") for b in closed)
-        print(f"Restarted browser(s): {names}")
+    names = ", ".join(b.replace(".exe", "") for b in closed)
+    print(f"Restarted browser(s): {names}")
 
 
 def read_hosts():
@@ -299,21 +318,37 @@ def remove_blocker_entries(content):
 def get_running_processes():
     """Get a set of currently running process names."""
     try:
+        # Use PowerShell — more reliable than tasklist for encoding
         output = subprocess.check_output(
-            ["tasklist", "/FO", "CSV", "/NH"],
+            ["powershell", "-NoProfile", "-Command",
+             "Get-Process | Select-Object -ExpandProperty ProcessName"],
             stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         processes = set()
-        for line in output.decode("utf-8", errors="ignore").strip().split("\n"):
-            line = line.strip()
-            if line:
-                # CSV format: "process.exe","PID","Session","Session#","Mem"
-                name = line.split(",")[0].strip('"')
-                processes.add(name.lower())
+        for line in output.decode("utf-8", errors="replace").strip().split("\n"):
+            name = line.strip()
+            if name:
+                # PowerShell gives names without .exe, add it for consistency
+                processes.add(name.lower() + ".exe")
         return processes
     except Exception:
-        return set()
+        # Fallback to tasklist if PowerShell fails
+        try:
+            output = subprocess.check_output(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            processes = set()
+            for line in output.decode("mbcs", errors="replace").strip().split("\n"):
+                line = line.strip()
+                if line:
+                    name = line.split(",")[0].strip('"')
+                    processes.add(name.lower())
+            return processes
+        except Exception:
+            return set()
 
 
 def kill_blocked_apps(apps):
