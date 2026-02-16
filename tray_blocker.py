@@ -57,12 +57,14 @@ class TrayBlocker:
         self.daemon_thread.start()
 
     def _daemon_loop(self):
-        """Background loop: re-apply site blocks and kill blocked apps."""
+        """Background loop: re-apply site blocks, URL blocks, and kill blocked apps."""
         while self.daemon_running:
             try:
                 if self.is_blocking:
                     sites = blocker.load_config()
                     blocker.block_sites(sites)
+                    urls = blocker.load_blocked_urls()
+                    blocker.apply_url_blocks(urls)
                 if self.app_blocking_enabled:
                     apps = blocker.load_blocked_apps()
                     blocker.kill_blocked_apps(apps)
@@ -71,18 +73,21 @@ class TrayBlocker:
             time.sleep(30)
 
     def toggle_blocking(self, icon, item):
-        """Toggle website blocking on/off."""
+        """Toggle website + URL blocking on/off."""
         if self.is_blocking:
             blocker.unblock_sites()
+            blocker.remove_url_blocks()
             self.is_blocking = False
             icon.icon = create_icon_image("gray")
-            icon.notify("Websites unblocked", "Website & App Blocker")
+            icon.notify("Sites & URLs unblocked", "Website & App Blocker")
         else:
             sites = blocker.load_config()
             blocker.block_sites(sites)
+            urls = blocker.load_blocked_urls()
+            blocker.apply_url_blocks(urls)
             self.is_blocking = True
             icon.icon = create_icon_image("red")
-            icon.notify("Websites blocked", "Website & App Blocker")
+            icon.notify("Sites & URLs blocked", "Website & App Blocker")
         icon.update_menu()
 
     def toggle_app_blocking(self, icon, item):
@@ -115,6 +120,8 @@ class TrayBlocker:
         if self.is_blocking:
             sites = blocker.load_config()
             blocker.block_sites(sites)
+            urls = blocker.load_blocked_urls()
+            blocker.apply_url_blocks(urls)
         if self.app_blocking_enabled:
             apps = blocker.load_blocked_apps()
             blocker.kill_blocked_apps(apps)
@@ -129,6 +136,7 @@ class TrayBlocker:
         """Quit and remove all blocks."""
         self.daemon_running = False
         blocker.unblock_sites()
+        blocker.remove_url_blocks()
         icon.stop()
 
     def run(self):
@@ -166,7 +174,9 @@ class TrayBlocker:
             self.is_blocking = True
             self.icon.icon = create_icon_image("red")
 
-        # Kill blocked apps immediately
+        # Apply URL blocks and kill blocked apps immediately
+        urls = blocker.load_blocked_urls()
+        blocker.apply_url_blocks(urls)
         apps = blocker.load_blocked_apps()
         blocker.kill_blocked_apps(apps)
 

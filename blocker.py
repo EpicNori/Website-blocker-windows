@@ -1,6 +1,7 @@
 """
 Website & App Blocker for Windows
-Blocks distracting websites via the hosts file and kills blocked apps.
+Blocks distracting websites via the hosts file, specific URL paths via
+browser policy (Chrome/Edge/Brave), and kills blocked apps.
 Runs at startup and keeps everything blocked.
 """
 
@@ -15,12 +16,21 @@ HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 BLOCK_MARKER_START = "# === WEBSITE BLOCKER START ==="
 BLOCK_MARKER_END = "# === WEBSITE BLOCKER END ==="
 REDIRECT_IP = "127.0.0.1"
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocked_sites.json")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "blocked_sites.json")
+LOCK_FILE = os.path.join(SCRIPT_DIR, "blocker.lock")
 
 # Default blocked apps — process names as they appear in Task Manager
 DEFAULT_BLOCKED_APPS = [
     "TikTok.exe",
     "Instagram.exe",
+]
+
+# Browser policy registry paths for URLBlocklist
+BROWSER_POLICY_KEYS = [
+    r"SOFTWARE\Policies\Google\Chrome\URLBlocklist",       # Chrome
+    r"SOFTWARE\Policies\Microsoft\Edge\URLBlocklist",       # Edge
+    r"SOFTWARE\Policies\BraveSoftware\Brave\URLBlocklist",  # Brave
 ]
 
 
@@ -46,15 +56,12 @@ def run_as_admin():
 # Config
 # ---------------------------------------------------------------------------
 
-def load_config():
-    """Load blocked websites and apps from the config file."""
-    if not os.path.exists(CONFIG_FILE):
-        default_sites = [
+def _default_config():
+    """Return the default config dict."""
+    return {
+        "blocked_sites": [
             "www.tiktok.com",
             "tiktok.com",
-            "www.youtube.com",
-            "youtube.com",
-            "m.youtube.com",
             "www.instagram.com",
             "instagram.com",
             "www.facebook.com",
@@ -65,55 +72,81 @@ def load_config():
             "www.x.com",
             "www.reddit.com",
             "reddit.com",
-        ]
-        save_config(default_sites, DEFAULT_BLOCKED_APPS)
-        return default_sites
-
-    with open(CONFIG_FILE, "r") as f:
-        data = json.load(f)
-    return data.get("blocked_sites", [])
-
-
-def load_blocked_apps():
-    """Load the list of blocked apps from the config file."""
-    if not os.path.exists(CONFIG_FILE):
-        load_config()  # creates the default config
-
-    with open(CONFIG_FILE, "r") as f:
-        data = json.load(f)
-    return data.get("blocked_apps", [])
+        ],
+        "blocked_urls": [
+            "youtube.com/shorts",
+            "youtube.com/shorts/*",
+            "m.youtube.com/shorts",
+            "m.youtube.com/shorts/*",
+        ],
+        "blocked_apps": DEFAULT_BLOCKED_APPS,
+    }
 
 
 def load_full_config():
-    """Load the full config dict."""
+    """Load the full config dict, creating defaults if needed."""
     if not os.path.exists(CONFIG_FILE):
-        load_config()
+        defaults = _default_config()
+        _write_config(defaults)
+        return defaults
 
     with open(CONFIG_FILE, "r") as f:
-        return json.load(f)
+        data = json.load(f)
+
+    # Ensure all keys exist (for configs from older versions)
+    changed = False
+    for key in ("blocked_sites", "blocked_urls", "blocked_apps"):
+        if key not in data:
+            data[key] = []
+            changed = True
+    if changed:
+        _write_config(data)
+
+    return data
+
+
+def _write_config(data):
+    """Write the full config dict to disk."""
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_config():
+    """Load the list of blocked websites."""
+    return load_full_config().get("blocked_sites", [])
+
+
+def load_blocked_apps():
+    """Load the list of blocked apps."""
+    return load_full_config().get("blocked_apps", [])
+
+
+def load_blocked_urls():
+    """Load the list of blocked URL paths."""
+    return load_full_config().get("blocked_urls", [])
 
 
 def save_config(sites, apps=None):
-    """Save blocked websites and apps to the config file."""
-    # Preserve existing apps if not provided
-    if apps is None:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r") as f:
-                data = json.load(f)
-            apps = data.get("blocked_apps", [])
-        else:
-            apps = DEFAULT_BLOCKED_APPS
-
-    with open(CONFIG_FILE, "w") as f:
-        json.dump({"blocked_sites": sites, "blocked_apps": apps}, f, indent=2)
+    """Save blocked websites (and optionally apps) to the config file."""
+    data = load_full_config() if os.path.exists(CONFIG_FILE) else _default_config()
+    data["blocked_sites"] = sites
+    if apps is not None:
+        data["blocked_apps"] = apps
+    _write_config(data)
 
 
 def save_blocked_apps(apps):
-    """Save the blocked apps list, preserving existing sites."""
+    """Save the blocked apps list, preserving everything else."""
     data = load_full_config()
     data["blocked_apps"] = apps
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _write_config(data)
+
+
+def save_blocked_urls(urls):
+    """Save the blocked URLs list, preserving everything else."""
+    data = load_full_config()
+    data["blocked_urls"] = urls
+    _write_config(data)
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +260,164 @@ def kill_blocked_apps(apps):
 
 
 # ---------------------------------------------------------------------------
+# URL path blocking (browser policy via registry)
+# ---------------------------------------------------------------------------
+
+def apply_url_blocks(urls):
+    """Write blocked URL patterns to Chrome/Edge/Brave URLBlocklist policy."""
+    if not urls:
+        return
+
+    try:
+        import winreg
+    except ImportError:
+        return
+
+    for reg_path in BROWSER_POLICY_KEYS:
+        try:
+            # Create the key (and parent keys) if they don't exist
+            key = winreg.CreateKeyEx(
+                winreg.HKEY_LOCAL_MACHINE, reg_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_READ
+            )
+
+            # Clear old entries first
+            try:
+                i = 0
+                while True:
+                    name, _, _ = winreg.EnumValue(key, i)
+                    try:
+                        winreg.DeleteValue(key, name)
+                    except OSError:
+                        i += 1
+            except OSError:
+                pass
+
+            # Write new entries (1-indexed)
+            for idx, url in enumerate(urls, start=1):
+                winreg.SetValueEx(key, str(idx), 0, winreg.REG_SZ, url)
+
+            winreg.CloseKey(key)
+        except PermissionError:
+            pass
+        except Exception:
+            pass
+
+    print(f"Applied {len(urls)} URL block(s) to browser policies.")
+
+
+def remove_url_blocks():
+    """Remove all URLBlocklist policy entries from the registry."""
+    try:
+        import winreg
+    except ImportError:
+        return
+
+    removed_any = False
+    for reg_path in BROWSER_POLICY_KEYS:
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, reg_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_READ
+            )
+            # Delete all values
+            try:
+                while True:
+                    name, _, _ = winreg.EnumValue(key, 0)
+                    winreg.DeleteValue(key, name)
+            except OSError:
+                pass
+            winreg.CloseKey(key)
+
+            # Try to remove the now-empty key
+            parent_path = "\\".join(reg_path.split("\\")[:-1])
+            child_name = reg_path.split("\\")[-1]
+            try:
+                parent = winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE, parent_path, 0, winreg.KEY_SET_VALUE
+                )
+                winreg.DeleteKey(parent, child_name)
+                winreg.CloseKey(parent)
+            except OSError:
+                pass
+
+            removed_any = True
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+    if removed_any:
+        print("Removed URL blocks from browser policies.")
+
+
+# ---------------------------------------------------------------------------
+# Daemon lock file
+# ---------------------------------------------------------------------------
+
+def write_lock_file():
+    """Write the current PID to the lock file."""
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def remove_lock_file():
+    """Remove the lock file."""
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
+
+
+def get_daemon_pid():
+    """Read the PID from the lock file. Returns None if no daemon is running."""
+    if not os.path.exists(LOCK_FILE):
+        return None
+    try:
+        with open(LOCK_FILE, "r") as f:
+            pid = int(f.read().strip())
+        # Check if the process is still running
+        output = subprocess.check_output(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if str(pid) in output.decode("utf-8", errors="ignore"):
+            return pid
+        # Stale lock file
+        remove_lock_file()
+        return None
+    except Exception:
+        remove_lock_file()
+        return None
+
+
+def stop_daemon():
+    """Stop a running daemon by killing its process."""
+    pid = get_daemon_pid()
+    if pid is None:
+        print("No daemon is currently running.")
+        return False
+    try:
+        subprocess.call(
+            ["taskkill", "/F", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        remove_lock_file()
+        print(f"Stopped daemon (PID {pid}).")
+        return True
+    except Exception as e:
+        print(f"Error stopping daemon: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Status / display
 # ---------------------------------------------------------------------------
 
 def show_status():
-    """Show which sites and apps are currently blocked."""
-    # Sites
+    """Show which sites, URLs, and apps are currently blocked."""
+    # Sites (hosts file)
     content = read_hosts()
     lines = content.split("\n")
     inside_block = False
@@ -251,11 +436,20 @@ def show_status():
                 blocked.append(parts[1])
 
     if blocked:
-        print("Currently blocked sites:")
+        print("Blocked sites (entire domain via hosts file):")
         for site in blocked:
             print(f"  - {site}")
     else:
         print("No sites are currently blocked.")
+
+    # URLs (browser policy)
+    urls = load_blocked_urls()
+    if urls:
+        print("\nBlocked URLs (path-based via browser policy — Chrome/Edge/Brave):")
+        for url in urls:
+            print(f"  - {url}")
+    else:
+        print("\nNo URL paths are being blocked.")
 
     # Apps
     apps = load_blocked_apps()
@@ -272,15 +466,16 @@ def show_status():
 def print_usage():
     """Print usage information."""
     print("Website & App Blocker for Windows")
-    print("-" * 45)
+    print("-" * 50)
     print()
-    print("Website commands:")
-    print("  python blocker.py block       - Block all sites from config")
-    print("  python blocker.py unblock     - Unblock all sites")
-    print("  python blocker.py status      - Show blocked sites & apps")
-    print("  python blocker.py add <site>  - Add a site to the block list")
+    print("Site commands (blocks entire domain via hosts file):")
+    print("  python blocker.py add <site>    - Add a site to block")
     print("  python blocker.py remove <site> - Remove a site")
-    print("  python blocker.py list        - List everything in config")
+    print()
+    print("URL commands (blocks specific paths in Chrome/Edge/Brave):")
+    print("  python blocker.py addurl <url>    - Add a URL path to block")
+    print("  python blocker.py removeurl <url> - Remove a URL path")
+    print("  Example: python blocker.py addurl youtube.com/shorts")
     print()
     print("App commands:")
     print("  python blocker.py addapp <name.exe>    - Add an app to block")
@@ -289,7 +484,12 @@ def print_usage():
     print("  python blocker.py listapps             - List running processes")
     print()
     print("General:")
-    print("  python blocker.py daemon    - Run in background (blocks sites + kills apps)")
+    print("  python blocker.py block     - Apply all blocks now")
+    print("  python blocker.py unblock   - Remove all blocks")
+    print("  python blocker.py status    - Show what's blocked")
+    print("  python blocker.py list      - Show config")
+    print("  python blocker.py daemon    - Run in background")
+    print("  python blocker.py stop      - Stop the daemon")
 
 
 def main():
@@ -301,13 +501,15 @@ def main():
     # --- Commands that don't need admin ---
 
     if command == "list":
-        sites = load_config()
-        apps = load_blocked_apps()
-        print("Blocked sites:")
-        for site in sites:
+        config = load_full_config()
+        print("Blocked sites (entire domain):")
+        for site in config.get("blocked_sites", []):
             print(f"  - {site}")
+        print(f"\nBlocked URLs (specific paths):")
+        for url in config.get("blocked_urls", []):
+            print(f"  - {url}")
         print(f"\nBlocked apps:")
-        for app in apps:
+        for app in config.get("blocked_apps", []):
             print(f"  - {app}")
         return
 
@@ -339,6 +541,8 @@ def main():
     if command == "block":
         sites = load_config()
         block_sites(sites)
+        urls = load_blocked_urls()
+        apply_url_blocks(urls)
         apps = load_blocked_apps()
         killed = kill_blocked_apps(apps)
         if killed:
@@ -346,6 +550,7 @@ def main():
 
     elif command == "unblock":
         unblock_sites()
+        remove_url_blocks()
 
     elif command == "add":
         if len(sys.argv) < 3:
@@ -416,6 +621,53 @@ def main():
         else:
             print(f"'{app_name}' was not in the blocked apps list.")
 
+    elif command == "addurl":
+        if len(sys.argv) < 3:
+            print("Usage: python blocker.py addurl <url_pattern>")
+            print()
+            print("Examples:")
+            print("  python blocker.py addurl youtube.com/shorts")
+            print("  python blocker.py addurl youtube.com/shorts/*")
+            print("  python blocker.py addurl reddit.com/r/funny")
+            print()
+            print("Tip: Don't include http:// — just domain/path.")
+            print("     Add /* at the end to block all sub-paths.")
+            return
+        url_pattern = sys.argv[2]
+        urls = load_blocked_urls()
+        if url_pattern not in urls:
+            urls.append(url_pattern)
+            # Auto-add wildcard variant if not already present
+            if not url_pattern.endswith("/*") and not url_pattern.endswith("*"):
+                wildcard = url_pattern.rstrip("/") + "/*"
+                if wildcard not in urls:
+                    urls.append(wildcard)
+            save_blocked_urls(urls)
+            print(f"Added '{url_pattern}' to blocked URLs.")
+        else:
+            print(f"'{url_pattern}' is already in the blocked URLs list.")
+        apply_url_blocks(urls)
+
+    elif command == "removeurl":
+        if len(sys.argv) < 3:
+            print("Usage: python blocker.py removeurl <url_pattern>")
+            return
+        url_pattern = sys.argv[2]
+        urls = load_blocked_urls()
+        removed = False
+        # Remove exact match and wildcard variant
+        to_remove = [url_pattern]
+        if not url_pattern.endswith("/*"):
+            to_remove.append(url_pattern.rstrip("/") + "/*")
+        new_urls = [u for u in urls if u not in to_remove]
+        if len(new_urls) < len(urls):
+            save_blocked_urls(new_urls)
+            print(f"Removed '{url_pattern}' from blocked URLs.")
+            removed = True
+        if not removed:
+            print(f"'{url_pattern}' was not in the blocked URLs list.")
+        apply_url_blocks(new_urls)
+
     elif command == "killapps":
         apps = load_blocked_apps()
         if not apps:
@@ -425,18 +677,33 @@ def main():
         if killed == 0:
             print("No blocked apps are currently running.")
 
+    elif command == "stop":
+        stop_daemon()
+
     elif command == "daemon":
-        print("Running in daemon mode. Blocking sites + killing apps every 30 seconds.")
+        # Stop any already-running daemon first
+        existing_pid = get_daemon_pid()
+        if existing_pid:
+            print(f"Stopping existing daemon (PID {existing_pid})...")
+            stop_daemon()
+
+        write_lock_file()
+        print(f"Running in daemon mode (PID {os.getpid()}).")
+        print("Blocking sites + URLs + killing apps every 30 seconds.")
         print("Press Ctrl+C to stop.")
         try:
             while True:
                 sites = load_config()
                 block_sites(sites)
+                urls = load_blocked_urls()
+                apply_url_blocks(urls)
                 apps = load_blocked_apps()
                 kill_blocked_apps(apps)
                 time.sleep(30)
         except KeyboardInterrupt:
             print("\nDaemon stopped.")
+        finally:
+            remove_lock_file()
 
     else:
         print(f"Unknown command: {command}")

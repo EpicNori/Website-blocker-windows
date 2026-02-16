@@ -1,6 +1,12 @@
 # Website & App Blocker for Windows
 
-A simple productivity tool that blocks distracting websites (TikTok, YouTube, Instagram, etc.) **and kills distracting apps** on your Windows PC. Websites are blocked via the Windows `hosts` file; apps are blocked by automatically killing their processes. Runs at startup so everything stays blocked.
+A productivity tool that blocks distracting websites, **specific URL paths** (like YouTube Shorts), and kills distracting apps on your Windows PC.
+
+- **Entire domains** are blocked via the Windows `hosts` file (e.g. tiktok.com)
+- **Specific URL paths** are blocked via Chrome/Edge/Brave browser policy (e.g. youtube.com/shorts)
+- **Apps** are blocked by automatically killing their processes
+
+Runs at startup so everything stays blocked.
 
 ## Quick Start
 
@@ -10,16 +16,18 @@ A simple productivity tool that blocks distracting websites (TikTok, YouTube, In
 
 ## How It Works
 
-- **Websites**: Adds entries to `C:\Windows\System32\drivers\etc\hosts` that redirect blocked domains to `127.0.0.1`, so your browser can't reach them.
-- **Apps**: Scans running processes every 30 seconds and force-kills any that match your blocked apps list (using `taskkill`).
-- A background daemon re-applies everything every 30 seconds so you can't easily bypass it.
+- **Sites** (`blocked_sites`): Adds entries to `C:\Windows\System32\drivers\etc\hosts` that redirect blocked domains to `127.0.0.1`. Blocks the entire domain.
+- **URLs** (`blocked_urls`): Writes URL patterns to Chrome/Edge/Brave `URLBlocklist` browser policy via the registry. This lets you block **specific paths** (like `/shorts`) without blocking the whole site. Works with HTTPS.
+- **Apps** (`blocked_apps`): Scans running processes every 30 seconds and force-kills any that match your list.
+- **Autostart**: Uses Windows Task Scheduler to launch the daemon at login with admin rights — no UAC prompt on boot.
+- The installer starts the daemon immediately so there's no gap.
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `blocker.py` | Core blocker — handles both websites and apps |
-| `blocked_sites.json` | Config file — lists blocked sites AND apps (edit this!) |
+| `blocker.py` | Core blocker — handles sites, URLs, and apps |
+| `blocked_sites.json` | Config file — edit this to customize what's blocked |
 | `setup_autostart.py` | Adds/removes the blocker from Windows startup |
 | `tray_blocker.py` | System tray app with toggle controls |
 | `install.bat` | One-click install (block + autostart) |
@@ -27,17 +35,21 @@ A simple productivity tool that blocks distracting websites (TikTok, YouTube, In
 
 ## Usage
 
-### Edit the block list
+### Edit the config file
 
 Open `blocked_sites.json` in any text editor:
 
 ```json
 {
   "blocked_sites": [
-    "www.tiktok.com",
     "tiktok.com",
-    "www.youtube.com",
-    "youtube.com"
+    "www.tiktok.com",
+    "instagram.com",
+    "www.instagram.com"
+  ],
+  "blocked_urls": [
+    "youtube.com/shorts",
+    "youtube.com/shorts/*"
   ],
   "blocked_apps": [
     "TikTok.exe",
@@ -46,39 +58,54 @@ Open `blocked_sites.json` in any text editor:
 }
 ```
 
-### Website commands
+- `blocked_sites` — blocks the **entire domain** (hosts file)
+- `blocked_urls` — blocks **specific paths** only (browser policy, works in Chrome/Edge/Brave)
+- `blocked_apps` — kills matching processes
+
+### Site commands (block entire domains)
 
 ```
-python blocker.py block           # Block all sites + kill blocked apps
-python blocker.py unblock         # Unblock all sites
-python blocker.py add tiktok.com  # Add a site (auto-adds www. variant)
-python blocker.py remove tiktok.com
-python blocker.py status          # Show what's blocked
-python blocker.py list            # Show full config
+python blocker.py add tiktok.com       # Add a site (auto-adds www. variant)
+python blocker.py remove tiktok.com    # Remove a site
 ```
+
+### URL commands (block specific paths)
+
+```
+python blocker.py addurl youtube.com/shorts       # Block YouTube Shorts
+python blocker.py addurl reddit.com/r/funny       # Block a specific subreddit
+python blocker.py removeurl youtube.com/shorts     # Unblock it
+```
+
+**How it works**: `addurl` automatically adds both the exact path and a wildcard variant (`/shorts/*`) so all sub-pages are blocked too. This uses the Chrome/Edge/Brave URLBlocklist policy — no extensions needed.
+
+**Important**: If a domain is in BOTH `blocked_sites` and `blocked_urls`, the hosts file blocks everything. To only block specific paths (like `/shorts`), make sure the domain is **only** in `blocked_urls`, not in `blocked_sites`.
 
 ### App commands
 
 ```
-python blocker.py addapp TikTok.exe      # Add an app to the block list
+python blocker.py addapp TikTok.exe      # Add an app to block
 python blocker.py removeapp TikTok.exe   # Remove an app
-python blocker.py killapps               # Kill all blocked apps right now
+python blocker.py killapps               # Kill blocked apps now
 python blocker.py listapps               # Show all running processes
 ```
 
-**Tip**: Don't know the process name? Run `python blocker.py listapps` to see all running `.exe` names, then use that name with `addapp`.
+**Tip**: Run `python blocker.py listapps` to see all running `.exe` names.
 
-### Daemon mode
+### General commands
 
 ```
-python blocker.py daemon   # Blocks sites + kills apps every 30 seconds
+python blocker.py block     # Apply all blocks now
+python blocker.py unblock   # Remove all blocks
+python blocker.py status    # Show what's currently blocked
+python blocker.py list      # Show full config
+python blocker.py daemon    # Run in background (every 30s)
+python blocker.py stop      # Stop the daemon
 ```
-
-This is what runs at startup automatically.
 
 ### System tray app (optional)
 
-For a tray icon with right-click controls (toggle sites, toggle apps, kill now):
+For a tray icon with right-click controls:
 
 ```
 pip install pystray Pillow
@@ -98,6 +125,7 @@ python setup_autostart.py status     # Check status
 Run `uninstall.bat` as administrator, or manually:
 
 ```
+python blocker.py stop
 python blocker.py unblock
 python setup_autostart.py uninstall
 ```
@@ -106,5 +134,6 @@ python setup_autostart.py uninstall
 
 - Windows 10/11
 - Python 3.7+
-- Administrator privileges (needed to edit the hosts file and kill processes)
+- Administrator privileges (needed to edit the hosts file, registry, and kill processes)
+- Chrome, Edge, or Brave (for URL path blocking — uses browser policy)
 - `pystray` and `Pillow` (only for the tray app — installed automatically by `install.bat`)

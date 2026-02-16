@@ -14,16 +14,30 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] Installing Python dependencies...
+echo [1/4] Installing Python dependencies...
 pip install pystray Pillow
 echo.
 
-echo [2/3] Blocking websites and killing blocked apps...
+echo [2/4] Blocking websites and killing blocked apps...
 python "%~dp0blocker.py" block
 echo.
 
-echo [3/3] Adding to Windows startup...
+echo [3/4] Adding to Windows startup...
 python "%~dp0setup_autostart.py" install
+echo.
+
+echo [4/4] Starting background daemon now...
+:: Stop any existing daemon first
+python "%~dp0blocker.py" stop 2>nul
+
+:: Use pythonw.exe (no console window) if available, else python.exe
+where pythonw.exe >nul 2>&1
+if errorlevel 1 (
+    start "" /B python "%~dp0blocker.py" daemon
+) else (
+    start "" /B pythonw "%~dp0blocker.py" daemon
+)
+echo Daemon started in background.
 echo.
 
 echo ============================================
@@ -32,7 +46,8 @@ echo ============================================
 echo.
 echo Your websites are now blocked and blocked apps
 echo will be killed automatically every 30 seconds.
-echo The blocker will start automatically when you log in.
+echo The blocker is running NOW and will auto-start
+echo on every login (no UAC prompt needed).
 echo.
 echo To edit which sites/apps are blocked, edit:
 echo   %~dp0blocked_sites.json

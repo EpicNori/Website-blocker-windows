@@ -2,9 +2,6 @@
   "blocked_sites": [
     "www.tiktok.com",
     "tiktok.com",
-    "www.youtube.com",
-    "youtube.com",
-    "m.youtube.com",
     "www.instagram.com",
     "instagram.com",
     "www.facebook.com",
@@ -15,6 +12,12 @@
     "www.x.com",
     "www.reddit.com",
     "reddit.com"
+  ],
+  "blocked_urls": [
+    "youtube.com/shorts",
+    "youtube.com/shorts/*",
+    "m.youtube.com/shorts",
+    "m.youtube.com/shorts/*"
   ],
   "blocked_apps": [
     "TikTok.exe",
