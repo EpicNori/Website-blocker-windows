@@ -164,6 +164,9 @@ def save_blocked_urls(urls):
 # Website blocking (hosts file)
 # ---------------------------------------------------------------------------
 
+BROWSERS = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe"]
+
+
 def flush_dns():
     """Flush the Windows DNS cache so blocked sites take effect immediately."""
     try:
@@ -175,6 +178,59 @@ def flush_dns():
         )
     except Exception:
         pass
+
+
+def restart_browsers():
+    """Gracefully close and relaunch browsers to drop cached connections.
+
+    Uses taskkill without /F so browsers save their session. When the user
+    reopens the browser it will offer to restore tabs — blocked sites will
+    fail to load.
+    """
+    running = get_running_processes()
+    closed = []
+
+    for browser in BROWSERS:
+        if browser.lower() in running:
+            # Graceful close (no /F) — lets the browser save session data
+            subprocess.call(
+                ["taskkill", "/IM", browser],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            closed.append(browser)
+
+    if closed:
+        # Give browsers a moment to save session data
+        time.sleep(2)
+
+        # Force-kill any that didn't close gracefully
+        for browser in closed:
+            subprocess.call(
+                ["taskkill", "/F", "/IM", browser],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+
+        time.sleep(1)
+
+        # Relaunch the browsers (they will restore their previous session)
+        for browser in closed:
+            try:
+                subprocess.Popen(
+                    [browser],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    | getattr(subprocess, "DETACHED_PROCESS", 0),
+                )
+            except Exception:
+                pass
+
+        names = ", ".join(b.replace(".exe", "") for b in closed)
+        print(f"Restarted browser(s): {names}")
 
 
 def read_hosts():
@@ -573,6 +629,8 @@ def main():
         killed = kill_blocked_apps(apps)
         if killed:
             print(f"Killed {killed} blocked app(s).")
+        # Restart browsers so already-open blocked sites get dropped
+        restart_browsers()
 
     elif command == "unblock":
         unblock_sites()
