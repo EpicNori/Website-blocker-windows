@@ -12,6 +12,17 @@ import subprocess
 import sys
 import time
 
+# ---------------------------------------------------------------------------
+# Fix for pythonw.exe: stdout/stderr are None when there's no console.
+# Redirect to a log file so print() doesn't crash the daemon.
+# ---------------------------------------------------------------------------
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocker.log")
+
+if sys.stdout is None:
+    sys.stdout = open(LOG_FILE, "a", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(LOG_FILE, "a", encoding="utf-8")
+
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 BLOCK_MARKER_START = "# === WEBSITE BLOCKER START ==="
 BLOCK_MARKER_END = "# === WEBSITE BLOCKER END ==="
@@ -153,6 +164,19 @@ def save_blocked_urls(urls):
 # Website blocking (hosts file)
 # ---------------------------------------------------------------------------
 
+def flush_dns():
+    """Flush the Windows DNS cache so blocked sites take effect immediately."""
+    try:
+        subprocess.call(
+            ["ipconfig", "/flushdns"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        pass
+
+
 def read_hosts():
     """Read the current hosts file content."""
     try:
@@ -163,7 +187,7 @@ def read_hosts():
 
 
 def block_sites(sites):
-    """Add blocked sites to the hosts file."""
+    """Add blocked sites to the hosts file and flush DNS."""
     content = read_hosts()
     content = remove_blocker_entries(content)
 
@@ -177,6 +201,7 @@ def block_sites(sites):
     with open(HOSTS_PATH, "w") as f:
         f.write(new_content)
 
+    flush_dns()
     print(f"Blocked {len(sites)} sites.")
 
 
@@ -188,6 +213,7 @@ def unblock_sites():
     with open(HOSTS_PATH, "w") as f:
         f.write(new_content)
 
+    flush_dns()
     print("All sites unblocked.")
 
 
@@ -690,15 +716,18 @@ def main():
         write_lock_file()
         print(f"Running in daemon mode (PID {os.getpid()}).")
         print("Blocking sites + URLs + killing apps every 30 seconds.")
-        print("Press Ctrl+C to stop.")
         try:
             while True:
-                sites = load_config()
-                block_sites(sites)
-                urls = load_blocked_urls()
-                apply_url_blocks(urls)
-                apps = load_blocked_apps()
-                kill_blocked_apps(apps)
+                try:
+                    sites = load_config()
+                    block_sites(sites)
+                    urls = load_blocked_urls()
+                    apply_url_blocks(urls)
+                    apps = load_blocked_apps()
+                    kill_blocked_apps(apps)
+                except Exception as e:
+                    # Don't let a single iteration failure kill the daemon
+                    print(f"Daemon cycle error: {e}")
                 time.sleep(30)
         except KeyboardInterrupt:
             print("\nDaemon stopped.")

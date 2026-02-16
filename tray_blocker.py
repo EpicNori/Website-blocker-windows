@@ -9,6 +9,13 @@ import sys
 import threading
 import time
 
+# Fix for pythonw.exe: redirect stdout/stderr so print() doesn't crash
+_log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocker.log")
+if sys.stdout is None:
+    sys.stdout = open(_log, "a", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(_log, "a", encoding="utf-8")
+
 try:
     import pystray
     from PIL import Image, ImageDraw
