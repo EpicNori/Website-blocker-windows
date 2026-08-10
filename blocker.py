@@ -6,11 +6,19 @@ Runs at startup and keeps everything blocked.
 """
 
 import ctypes
+import hashlib
+import ipaddress
 import json
 import os
+import re
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.parse
+import urllib.request
 
 # ---------------------------------------------------------------------------
 # Fix for pythonw.exe: stdout/stderr are None when there's no console.
@@ -23,13 +31,25 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(LOG_FILE, "a", encoding="utf-8")
 
-HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
+SYSTEM_HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
+HOSTS_PATH = SYSTEM_HOSTS_PATH
 BLOCK_MARKER_START = "# === WEBSITE BLOCKER START ==="
 BLOCK_MARKER_END = "# === WEBSITE BLOCKER END ==="
 REDIRECT_IP = "127.0.0.1"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "blocked_sites.json")
 LOCK_FILE = os.path.join(SCRIPT_DIR, "blocker.lock")
+HOSTS_LIST_DIR = os.path.join(SCRIPT_DIR, "hosts")
+HOSTS_CACHE_DIR = os.path.join(HOSTS_LIST_DIR, "cache")
+MAX_HOSTS_DOWNLOAD_BYTES = 25 * 1024 * 1024
+
+DEFAULT_HOSTS_SOURCES = [
+    {
+        "name": "PornAway porn sites",
+        "url": "https://raw.githubusercontent.com/mhxion/pornaway/master/hosts/porn_sites.txt",
+        "enabled": True,
+    }
+]
 
 # Default blocked apps — process names as they appear in Task Manager
 DEFAULT_BLOCKED_APPS = [
@@ -91,6 +111,7 @@ def _default_config():
             "m.youtube.com/shorts/*",
         ],
         "blocked_apps": DEFAULT_BLOCKED_APPS,
+        "hosts_sources": DEFAULT_HOSTS_SOURCES,
     }
 
 
@@ -101,14 +122,15 @@ def load_full_config():
         _write_config(defaults)
         return defaults
 
-    with open(CONFIG_FILE, "r") as f:
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     # Ensure all keys exist (for configs from older versions)
     changed = False
-    for key in ("blocked_sites", "blocked_urls", "blocked_apps"):
+    defaults = _default_config()
+    for key in ("blocked_sites", "blocked_urls", "blocked_apps", "hosts_sources"):
         if key not in data:
-            data[key] = []
+            data[key] = defaults[key]
             changed = True
     if changed:
         _write_config(data)
@@ -117,14 +139,55 @@ def load_full_config():
 
 
 def _write_config(data):
-    """Write the full config dict to disk."""
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    """Write the full config dict atomically."""
+    config_dir = os.path.dirname(os.path.abspath(CONFIG_FILE))
+    os.makedirs(config_dir, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".blocker-config-", dir=config_dir, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(data, handle, indent=2)
+            handle.write("\n")
+        os.replace(temp_path, CONFIG_FILE)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def save_full_config(data):
+    """Persist a complete configuration while ensuring all supported keys exist."""
+    defaults = _default_config()
+    normalized = {}
+    for key in ("blocked_sites", "blocked_urls", "blocked_apps", "hosts_sources"):
+        value = data.get(key, defaults[key]) if isinstance(data, dict) else defaults[key]
+        normalized[key] = value if isinstance(value, list) else defaults[key]
+    _write_config(normalized)
 
 
 def load_config():
-    """Load the list of blocked websites."""
+    """Load user-configured websites (without cached hosts lists)."""
     return load_full_config().get("blocked_sites", [])
+
+
+def load_blocked_domains():
+    """Load, normalize, and de-duplicate custom sites plus cached hosts lists."""
+    domains = list(load_config())
+    if os.path.isdir(HOSTS_LIST_DIR):
+        for name in sorted(os.listdir(HOSTS_LIST_DIR)):
+            if not name.lower().endswith((".txt", ".hosts")):
+                continue
+            path = os.path.join(HOSTS_LIST_DIR, name)
+            if os.path.isfile(path):
+                domains.extend(load_hosts_file(path))
+    for source in load_full_config().get("hosts_sources", []):
+        if not isinstance(source, dict) or not source.get("enabled", True):
+            continue
+        try:
+            cache_path = _source_cache_path(source)
+        except (KeyError, TypeError):
+            continue
+        if os.path.isfile(cache_path):
+            domains.extend(load_hosts_file(cache_path))
+    return sorted(set(filter(None, (normalize_domain(value) for value in domains))))
 
 
 def load_blocked_apps():
@@ -164,6 +227,139 @@ def save_blocked_urls(urls):
 # Website blocking (hosts file)
 # ---------------------------------------------------------------------------
 
+def normalize_domain(value):
+    """Return a safe ASCII hostname, or None for invalid/non-domain input."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip().lower().rstrip(".")
+    if not value:
+        return None
+
+    if "://" in value:
+        value = urllib.parse.urlsplit(value).hostname or ""
+    value = value.lstrip("*.").rstrip(".")
+    try:
+        value = value.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+
+    if value == "localhost" or len(value) > 253 or "." not in value:
+        return None
+    try:
+        ipaddress.ip_address(value)
+        return None
+    except ValueError:
+        pass
+
+    labels = value.split(".")
+    if any(
+        not label
+        or len(label) > 63
+        or label.startswith("-")
+        or label.endswith("-")
+        or not re.match(r"^[a-z0-9-]+$", label)
+        for label in labels
+    ):
+        return None
+    return value
+
+
+def parse_hosts_content(content):
+    """Parse both plain domain lists and standard hosts-file formatted lists."""
+    domains = set()
+    for raw_line in content.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        candidates = fields
+        try:
+            ipaddress.ip_address(fields[0])
+            candidates = fields[1:]
+        except ValueError:
+            pass
+        for candidate in candidates:
+            domain = normalize_domain(candidate)
+            if domain:
+                domains.add(domain)
+    return sorted(domains)
+
+
+def normalize_process_name(value):
+    """Return a safe executable filename or None; taskkill wildcards are forbidden."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value.lower().endswith(".exe"):
+        value += ".exe"
+    if len(value) > 255 or not re.match(r"^[a-zA-Z0-9_. -]+\.exe$", value):
+        return None
+    return value
+
+
+def load_hosts_file(path):
+    """Load domains from a local hosts list without failing the blocker."""
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="ignore") as handle:
+            return parse_hosts_content(handle.read())
+    except OSError as exc:
+        print(f"Could not read hosts list '{path}': {exc}")
+        return []
+
+
+def _source_cache_path(source):
+    """Return a deterministic, traversal-safe cache path for a source."""
+    name = re.sub(r"[^a-z0-9]+", "-", str(source.get("name", "hosts-list")).lower())
+    name = name.strip("-")[:60] or "hosts-list"
+    digest = hashlib.sha256(source["url"].encode("utf-8")).hexdigest()[:8]
+    return os.path.join(HOSTS_CACHE_DIR, f"{name}-{digest}.txt")
+
+
+def update_hosts_sources():
+    """Download enabled HTTPS hosts sources, validate them, and atomically cache them."""
+    sources = load_full_config().get("hosts_sources", [])
+    enabled = [
+        source for source in sources
+        if isinstance(source, dict) and source.get("enabled", True) and source.get("url")
+    ]
+    if not enabled:
+        print("No enabled hosts sources configured.")
+        return 0
+
+    os.makedirs(HOSTS_CACHE_DIR, exist_ok=True)
+    updated = 0
+    for source in enabled:
+        url = str(source.get("url", ""))
+        if urllib.parse.urlsplit(url).scheme.lower() != "https":
+            print(f"Skipped '{source.get('name', url)}': only HTTPS sources are allowed.")
+            continue
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "WebsiteBlocker/1.0"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https":
+                    raise ValueError("source redirected to a non-HTTPS URL")
+                payload = response.read(MAX_HOSTS_DOWNLOAD_BYTES + 1)
+            if len(payload) > MAX_HOSTS_DOWNLOAD_BYTES:
+                raise ValueError("download exceeds 25 MB limit")
+            domains = parse_hosts_content(payload.decode("utf-8-sig", errors="ignore"))
+            if not domains:
+                raise ValueError("source did not contain valid domains")
+
+            cache_path = _source_cache_path(source)
+            fd, temp_path = tempfile.mkstemp(prefix=".hosts-", dir=HOSTS_CACHE_DIR, text=True)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.write("\n".join(domains) + "\n")
+                os.replace(temp_path, cache_path)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            print(f"Updated '{source.get('name', url)}': {len(domains)} domains.")
+            updated += 1
+        except Exception as exc:
+            print(f"Could not update '{source.get('name', url)}': {exc}")
+    return updated
+
 def flush_dns():
     """Flush the Windows DNS cache so blocked sites take effect immediately."""
     try:
@@ -180,58 +376,128 @@ def flush_dns():
 def read_hosts():
     """Read the current hosts file content."""
     try:
-        with open(HOSTS_PATH, "r") as f:
+        with open(HOSTS_PATH, "r", encoding="utf-8-sig", errors="ignore") as f:
             return f.read()
     except FileNotFoundError:
         return ""
 
 
+def _write_hosts(content):
+    """Write the Windows hosts file only when its content changed."""
+    current = read_hosts()
+    normalized = content.rstrip("\r\n") + "\r\n"
+    if current.replace("\r\n", "\n") == normalized.replace("\r\n", "\n"):
+        return False
+    backup_path = HOSTS_PATH + ".website-blocker-backup"
+    if os.path.exists(HOSTS_PATH) and not os.path.exists(backup_path):
+        shutil.copy2(HOSTS_PATH, backup_path)
+    with open(HOSTS_PATH, "w", encoding="utf-8", newline="") as handle:
+        handle.write(normalized)
+    return True
+
+
+def verify_blocked_domains(domains, attempts=5, retry_delay=0.2):
+    """Verify through Winsock that representative blocked domains resolve locally."""
+    normalized = sorted(set(filter(None, (normalize_domain(domain) for domain in domains))))
+    configured = [normalize_domain(domain) for domain in load_config()]
+    samples = [domain for domain in configured if domain in normalized][:5]
+    if not samples:
+        samples = normalized[:5]
+    if not samples:
+        return []
+
+    failures = {}
+    for attempt in range(max(1, attempts)):
+        failures = {}
+        for domain in samples:
+            try:
+                addresses = {
+                    result[4][0]
+                    for result in socket.getaddrinfo(domain, 443, type=socket.SOCK_STREAM)
+                }
+            except OSError as exc:
+                failures[domain] = {f"error: {exc}"}
+                continue
+            public_addresses = addresses.difference({REDIRECT_IP, "::1"})
+            if public_addresses or not addresses:
+                failures[domain] = public_addresses or addresses
+        if not failures:
+            print(f"Verified local DNS blocking for {len(samples)} representative domain(s).")
+            return samples
+        if attempt + 1 < max(1, attempts):
+            time.sleep(retry_delay)
+
+    details = "; ".join(
+        f"{domain} -> {', '.join(sorted(addresses))}" for domain, addresses in failures.items()
+    )
+    raise RuntimeError(f"Hosts entries were written but DNS blocking verification failed: {details}")
+
+
 def block_sites(sites):
-    """Add blocked sites to the hosts file and flush DNS."""
+    """Replace the managed hosts section and flush DNS when it changed."""
     content = read_hosts()
+    if content.count(BLOCK_MARKER_START) != content.count(BLOCK_MARKER_END):
+        raise RuntimeError(
+            "The hosts file contains an incomplete Website Blocker marker section; "
+            "repair it manually before applying blocks."
+        )
     content = remove_blocker_entries(content)
 
+    domains = sorted(set(filter(None, (normalize_domain(site) for site in sites))))
+
     block_lines = [BLOCK_MARKER_START]
-    for site in sites:
+    for site in domains:
         block_lines.append(f"{REDIRECT_IP} {site}")
     block_lines.append(BLOCK_MARKER_END)
 
-    new_content = content.rstrip("\n") + "\n\n" + "\n".join(block_lines) + "\n"
-
-    with open(HOSTS_PATH, "w") as f:
-        f.write(new_content)
-
-    flush_dns()
-    print(f"Blocked {len(sites)} sites.")
+    prefix = content.rstrip("\r\n")
+    new_content = (prefix + "\n\n" if prefix else "") + "\n".join(block_lines)
+    if _write_hosts(new_content):
+        flush_dns()
+    if os.path.normcase(os.path.abspath(HOSTS_PATH)) == os.path.normcase(SYSTEM_HOSTS_PATH):
+        verify_blocked_domains(domains)
+    print(f"Blocked {len(domains)} domains via the Windows hosts file.")
 
 
 def unblock_sites():
     """Remove all blocker entries from the hosts file."""
     content = read_hosts()
+    if content.count(BLOCK_MARKER_START) != content.count(BLOCK_MARKER_END):
+        raise RuntimeError(
+            "The hosts file contains an incomplete Website Blocker marker section; "
+            "nothing was changed."
+        )
     new_content = remove_blocker_entries(content)
 
-    with open(HOSTS_PATH, "w") as f:
-        f.write(new_content)
-
-    flush_dns()
+    if _write_hosts(new_content):
+        flush_dns()
     print("All sites unblocked.")
 
 
 def remove_blocker_entries(content):
     """Remove the blocker section from hosts file content."""
-    lines = content.split("\n")
+    lines = content.splitlines()
     new_lines = []
     inside_block = False
+    pending_block = []
 
     for line in lines:
         if line.strip() == BLOCK_MARKER_START:
             inside_block = True
+            pending_block = [line]
             continue
-        if line.strip() == BLOCK_MARKER_END:
+        if inside_block and line.strip() == BLOCK_MARKER_END:
             inside_block = False
+            pending_block = []
             continue
-        if not inside_block:
+        if inside_block:
+            pending_block.append(line)
+        else:
             new_lines.append(line)
+
+    # Preserve an unterminated marker block to avoid deleting unrelated entries.
+    if inside_block:
+        new_lines.extend(pending_block)
 
     return "\n".join(new_lines)
 
@@ -269,15 +535,16 @@ def kill_blocked_apps(apps):
     killed = 0
 
     for app in apps:
-        if app.lower() in running:
+        safe_app = normalize_process_name(app)
+        if safe_app and safe_app.lower() in running:
             try:
                 subprocess.call(
-                    ["taskkill", "/F", "/IM", app],
+                    ["taskkill", "/F", "/IM", safe_app],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
-                print(f"Killed blocked app: {app}")
+                print(f"Killed blocked app: {safe_app}")
                 killed += 1
             except Exception:
                 pass
@@ -462,9 +729,11 @@ def show_status():
                 blocked.append(parts[1])
 
     if blocked:
-        print("Blocked sites (entire domain via hosts file):")
-        for site in blocked:
+        print(f"Blocked domains via hosts file: {len(blocked)}")
+        for site in blocked[:25]:
             print(f"  - {site}")
+        if len(blocked) > 25:
+            print(f"  ... and {len(blocked) - 25} more")
     else:
         print("No sites are currently blocked.")
 
@@ -497,6 +766,7 @@ def print_usage():
     print("Site commands (blocks entire domain via hosts file):")
     print("  python blocker.py add <site>    - Add a site to block")
     print("  python blocker.py remove <site> - Remove a site")
+    print("  python blocker.py updatehosts   - Download configured hosts lists")
     print()
     print("URL commands (blocks specific paths in Chrome/Edge/Brave):")
     print("  python blocker.py addurl <url>    - Add a URL path to block")
@@ -537,6 +807,13 @@ def main():
         print(f"\nBlocked apps:")
         for app in config.get("blocked_apps", []):
             print(f"  - {app}")
+        print("\nHosts-list sources:")
+        for source in config.get("hosts_sources", []):
+            if not isinstance(source, dict):
+                print("  - invalid source entry (ignored)")
+                continue
+            state = "enabled" if source.get("enabled", True) else "disabled"
+            print(f"  - {source.get('name', source.get('url', 'unnamed'))} ({state})")
         return
 
     if command == "status":
@@ -557,6 +834,10 @@ def main():
         print("Example: python blocker.py addapp TikTok.exe")
         return
 
+    if command == "updatehosts":
+        update_hosts_sources()
+        return
+
     # --- Commands that need admin ---
 
     if not is_admin():
@@ -565,8 +846,7 @@ def main():
         return
 
     if command == "block":
-        sites = load_config()
-        block_sites(sites)
+        block_sites(load_blocked_domains())
         urls = load_blocked_urls()
         apply_url_blocks(urls)
         apps = load_blocked_apps()
@@ -594,7 +874,7 @@ def main():
             print(f"Added '{site}' to block list.")
         else:
             print(f"'{site}' is already in the block list.")
-        block_sites(sites)
+        block_sites(load_blocked_domains())
 
     elif command == "remove":
         if len(sys.argv) < 3:
@@ -615,14 +895,17 @@ def main():
             print(f"Removed '{site}' from block list.")
         else:
             print(f"'{site}' was not in the block list.")
-        block_sites(sites)
+        block_sites(load_blocked_domains())
 
     elif command == "addapp":
         if len(sys.argv) < 3:
             print("Usage: python blocker.py addapp <process_name.exe>")
             print("Tip:   python blocker.py listapps  — to see running processes")
             return
-        app_name = sys.argv[2]
+        app_name = normalize_process_name(sys.argv[2])
+        if not app_name:
+            print("Invalid process name. Wildcards and paths are not allowed.")
+            return
         apps = load_blocked_apps()
         # Case-insensitive check
         if app_name.lower() not in [a.lower() for a in apps]:
@@ -719,7 +1002,7 @@ def main():
         try:
             while True:
                 try:
-                    sites = load_config()
+                    sites = load_blocked_domains()
                     block_sites(sites)
                     urls = load_blocked_urls()
                     apply_url_blocks(urls)

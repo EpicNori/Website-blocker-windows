@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 blocker.lock
 blocker.log
+graphify-out/
+hosts/cache/

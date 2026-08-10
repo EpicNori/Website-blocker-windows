@@ -14,19 +14,23 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/4] Installing Python dependencies...
-pip install pystray Pillow
+echo [1/5] Installing Python dependencies...
+python -m pip install pystray Pillow
 echo.
 
-echo [2/4] Blocking websites and killing blocked apps...
+echo [2/5] Updating external hosts lists...
+python "%~dp0blocker.py" updatehosts
+echo.
+
+echo [3/5] Blocking websites and killing blocked apps...
 python "%~dp0blocker.py" block
 echo.
 
-echo [3/4] Adding to Windows startup...
+echo [4/5] Adding to Windows startup...
 python "%~dp0setup_autostart.py" install
 echo.
 
-echo [4/4] Starting background daemon now...
+echo [5/5] Starting background daemon now...
 :: Stop any existing daemon first
 python "%~dp0blocker.py" stop 2>nul
 
@@ -56,5 +60,8 @@ echo To see running apps (so you know the .exe name):
 echo   python blocker.py listapps
 echo.
 echo To uninstall, run uninstall.bat
+echo.
+echo Opening the control panel...
+start "" "%~dp0start_ui.bat"
 echo.
 pause

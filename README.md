@@ -3,6 +3,7 @@
 A productivity tool that blocks distracting websites, **specific URL paths** (like YouTube Shorts), and kills distracting apps on your Windows PC.
 
 - **Entire domains** are blocked via the Windows `hosts` file (e.g. tiktok.com)
+- **Large hosts lists** in standard `127.0.0.1 domain.example` format are supported (including PornAway-style lists)
 - **Specific URL paths** are blocked via Chrome/Edge/Brave browser policy (e.g. youtube.com/shorts)
 - **Apps** are blocked by automatically killing their processes
 
@@ -12,11 +13,15 @@ Runs at startup so everything stays blocked.
 
 1. Make sure [Python](https://www.python.org/downloads/) is installed (check "Add Python to PATH" during install)
 2. **Right-click `install.bat` and select "Run as administrator"**
-3. Done — sites are blocked, apps get killed, and it auto-starts on every login
+3. Done — sites are blocked, apps get killed, and the desktop control panel opens
+
+After installation, double-click `start_ui.bat` whenever you want to open the control panel. Windows requests administrator privileges because editing the hosts file requires them; the UI will not open in a non-functional, non-administrator mode.
 
 ## How It Works
 
-- **Sites** (`blocked_sites`): Adds entries to `C:\Windows\System32\drivers\etc\hosts` that redirect blocked domains to `127.0.0.1`. Blocks the entire domain.
+- **Sites** (`blocked_sites`): Adds a clearly marked, replaceable section to `C:\Windows\System32\drivers\etc\hosts` that redirects blocked domains to `127.0.0.1`.
+- **Live verification**: After applying the hosts section, the blocker checks representative configured domains through Windows Winsock. It reports an error instead of a false success if any still resolve publicly.
+- **Hosts sources** (`hosts_sources`): Downloads configured HTTPS lists into `hosts/cache/`. Cached domains and local `.txt`/`.hosts` files placed directly in `hosts/` are merged with `blocked_sites`, normalized, and de-duplicated.
 - **URLs** (`blocked_urls`): Writes URL patterns to Chrome/Edge/Brave `URLBlocklist` browser policy via the registry. This lets you block **specific paths** (like `/shorts`) without blocking the whole site. Works with HTTPS.
 - **Apps** (`blocked_apps`): Scans running processes every 30 seconds and force-kills any that match your list.
 - **Autostart**: Uses Windows Task Scheduler to launch the daemon at login with admin rights — no UAC prompt on boot.
@@ -27,13 +32,26 @@ Runs at startup so everything stays blocked.
 | File | Description |
 |------|-------------|
 | `blocker.py` | Core blocker — handles sites, URLs, and apps |
+| `blocker_ui.py` | Native Windows control panel built with Tkinter |
 | `blocked_sites.json` | Config file — edit this to customize what's blocked |
 | `setup_autostart.py` | Adds/removes the blocker from Windows startup |
 | `tray_blocker.py` | System tray app with toggle controls |
+| `start_ui.bat` | Opens the desktop control panel |
 | `install.bat` | One-click install (block + autostart) |
 | `uninstall.bat` | One-click uninstall (unblock + remove autostart) |
 
 ## Usage
+
+### Desktop control panel
+
+Double-click `start_ui.bat`. The interface provides tabs for:
+
+- websites and URL-path rules
+- blocked Windows applications
+- external HTTPS hosts-list sources
+- update and activity logs
+
+Use **Enable Blocking** to write the managed section to the Windows hosts file. **Remove Blocking** removes only the managed section and leaves unrelated hosts entries intact.
 
 ### Edit the config file
 
@@ -54,6 +72,13 @@ Open `blocked_sites.json` in any text editor:
   "blocked_apps": [
     "TikTok.exe",
     "Instagram.exe"
+  ],
+  "hosts_sources": [
+    {
+      "name": "PornAway porn sites",
+      "url": "https://raw.githubusercontent.com/mhxion/pornaway/master/hosts/porn_sites.txt",
+      "enabled": true
+    }
   ]
 }
 ```
@@ -61,13 +86,27 @@ Open `blocked_sites.json` in any text editor:
 - `blocked_sites` — blocks the **entire domain** (hosts file)
 - `blocked_urls` — blocks **specific paths** only (browser policy, works in Chrome/Edge/Brave)
 - `blocked_apps` — kills matching processes
+- `hosts_sources` — HTTPS hosts lists downloaded with `python blocker.py updatehosts`
+
+The included PornAway source is compatible with the linked project, but its own metadata says the list was last updated in 2018. You can disable it or replace the URL with a maintained source.
 
 ### Site commands (block entire domains)
 
 ```
 python blocker.py add tiktok.com       # Add a site (auto-adds www. variant)
 python blocker.py remove tiktok.com    # Remove a site
+python blocker.py updatehosts          # Refresh configured external hosts lists
 ```
+
+You can also place a local PornAway-style list directly in `hosts/`, for example:
+
+```text
+127.0.0.1 example.com
+0.0.0.0 ads.example.net
+plain-domain.example
+```
+
+Only valid domains are imported. Comments, localhost entries, IP addresses, invalid hostnames, and duplicates are ignored. A first-run backup is stored beside the Windows hosts file as `hosts.website-blocker-backup`.
 
 ### URL commands (block specific paths)
 

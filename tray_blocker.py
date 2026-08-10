@@ -68,7 +68,7 @@ class TrayBlocker:
         while self.daemon_running:
             try:
                 if self.is_blocking:
-                    sites = blocker.load_config()
+                    sites = blocker.load_blocked_domains()
                     blocker.block_sites(sites)
                     urls = blocker.load_blocked_urls()
                     blocker.apply_url_blocks(urls)
@@ -88,7 +88,7 @@ class TrayBlocker:
             icon.icon = create_icon_image("gray")
             icon.notify("Sites & URLs unblocked", "Website & App Blocker")
         else:
-            sites = blocker.load_config()
+            sites = blocker.load_blocked_domains()
             blocker.block_sites(sites)
             urls = blocker.load_blocked_urls()
             blocker.apply_url_blocks(urls)
@@ -125,7 +125,7 @@ class TrayBlocker:
     def refresh_blocks(self, icon, item):
         """Re-read config and re-apply blocks."""
         if self.is_blocking:
-            sites = blocker.load_config()
+            sites = blocker.load_blocked_domains()
             blocker.block_sites(sites)
             urls = blocker.load_blocked_urls()
             blocker.apply_url_blocks(urls)
@@ -176,7 +176,7 @@ class TrayBlocker:
 
         # Auto-block on startup
         if not self.is_blocking:
-            sites = blocker.load_config()
+            sites = blocker.load_blocked_domains()
             blocker.block_sites(sites)
             self.is_blocking = True
             self.icon.icon = create_icon_image("red")

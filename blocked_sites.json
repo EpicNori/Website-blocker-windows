@@ -22,5 +22,12 @@
   "blocked_apps": [
     "TikTok.exe",
     "Instagram.exe"
+  ],
+  "hosts_sources": [
+    {
+      "name": "PornAway porn sites",
+      "url": "https://raw.githubusercontent.com/mhxion/pornaway/master/hosts/porn_sites.txt",
+      "enabled": true
+    }
   ]
 }
